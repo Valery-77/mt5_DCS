@@ -2,10 +2,8 @@ import asyncio
 from datetime import datetime
 from math import fabs
 
-import aiohttp
-import requests
-
 import deal_comment
+from db_interface import DBInterface
 from deal_comment import DealComment
 import settings
 from http_commands import send_comment
@@ -13,34 +11,33 @@ from linked_positions import LinkedPositions
 from terminal import Terminal
 
 terminal: Terminal
+old_investors_balance = 0
+leader_positions = []
+# leader_balance = 0
+# leader_equity = 0
+# leader_currency = 'USD'
+# self_currency = ''
+dcs_access = True
+# init_data = {}
+# options = {}
+EURUSD = EURRUB = USDRUB = 0
+db = DBInterface()
+start_date = datetime.now().replace(microsecond=0)
+
+leader_account_id = 1
+account_id = 2
+
+host = 'http://127.0.0.1:8000/'
+terminal_path = r'C:\Program Files\MetaTrader 5_2\terminal64.exe'
 
 
-async def disable_dcs(investor):
-    async with aiohttp.ClientSession() as session:
-        investor_id = -1
-        # for _ in source['investors']:
-        #     if _['login'] == investor['login']:
-        #         investor_id = source['investors'].index(_)
-        #         break
-        # if investor_id < 0:
-        #     return
-        id_shift = '_' + str(investor_id + 1)
-        url = settings.host + 'last'
-        response = requests.get(url).json()[0]
-        numb = response['id']
-        url = settings.host + f'patch/{numb}/'
-        name = "access" + id_shift
-        async with session.patch(url=url, data={name: False}) as resp:
-            await resp.json()
-
-
-async def check_connection_exchange(investor):
+async def check_connection_exchange():
     close_reason = None
     try:
-        if investor['api_key_expired'] == "Да":
+        if db.options['api_key_expired'] == "Да":
             close_reason = '04'
             # force_close_all_positions(investor=investor, reason=close_reason)
-        elif investor['no_exchange_connection'] == 'Да':
+        elif db.options['no_exchange_connection'] == 'Да':
             close_reason = '05'
             # force_close_all_positions(investor=investor, reason=close_reason)
         if close_reason:
@@ -50,46 +47,46 @@ async def check_connection_exchange(investor):
     return True if close_reason else False
 
 
-async def check_notification(investor):
-    if investor['notification'] == 'Да':
+async def check_notification():
+    if db.options['notification'] == 'Да':
         await send_comment('Вы должны оплатить вознаграждение')
         return True
     return False
 
 
-async def execute_conditions(investor):
-    if investor['disconnect'] == 'Да':
-        await send_comment('Инициатор отключения: ' + investor['shutdown_initiator'])
+async def execute_conditions():
+    if db.options['disconnect'] == 'Да':
+        await send_comment('Инициатор отключения: ' + db.options['shutdown_initiator'])
 
-        if Terminal.get_investors_positions_count(investor=investor, only_own=True) == 0:  # если нет открытых сделок
-            await disable_dcs(investor)
+        if Terminal.get_investors_positions_count(only_own=True) == 0:  # если нет открытых сделок
+            await db.disable_dcs()
 
-        if investor['open_trades_disconnect'] == 'Закрыть':  # если сделки закрыть
-            Terminal.force_close_all_positions(investor)
-            await disable_dcs(investor)
+        if db.options['open_trades_disconnect'] == 'Закрыть':  # если сделки закрыть
+            Terminal.force_close_all_positions('03')
+            await db.disable_dcs()
 
-        elif investor['accompany_transactions'] == 'Нет':  # если сделки оставить и не сопровождать
-            await disable_dcs(investor)
+        elif db.options['accompany_transactions'] == 'Нет':  # если сделки оставить и не сопровождать
+            await db.disable_dcs()
 
 
-async def check_stop_limits(investor):
+async def check_stop_limits():
     """Проверка стоп-лимита по проценту либо абсолютному показателю"""
-    start_balance = investor['investment_size']
+    start_balance = float(db.options['investment'])
     if start_balance <= 0:
         start_balance = 1
-    limit_size = investor['stop_value']
-    calc_limit_in_percent = True if investor['stop_loss'] == 'Процент' else False
-    history_profit = Terminal.get_history_profit()
+    limit_size = db.options['stop_value']
+    calc_limit_in_percent = True if db.options['stop_loss'] == 'Процент' else False
+    history_profit = terminal.get_history_profit()
     current_profit = Terminal.get_positions_profit()
     # SUMM TOTAL PROFIT
     if history_profit is None or current_profit is None:
         return
     close_positions = False
     total_profit = history_profit + current_profit
-    print(f' - {investor["login"]} [{investor["currency"]}] - {len(Terminal.get_positions())} positions. Access:',
-          investor['dcs_access'], end='')
-    print('\t', 'Прибыль' if total_profit >= 0 else 'Убыток', 'торговли c', settings.start_date,
-          ':', round(total_profit, 2), investor['currency'],
+    print(f' - {init_data["login"]} [{db.leader_currency}] - {len(Terminal.get_positions())} positions. Access:',
+          dcs_access,  ' ', datetime.now(), end='')
+    print('\t', 'Прибыль' if total_profit >= 0 else 'Убыток', 'торговли c', start_date,
+          ':', round(total_profit, 2), db.leader_currency,
           '{curr.', round(current_profit, 2), ': hst. ' + str(round(history_profit, 2)) + '}')
     # CHECK LOST SIZE FOR CLOSE ALL
     if total_profit < 0:
@@ -104,24 +101,21 @@ async def check_stop_limits(investor):
         if close_positions and len(active_positions) > 0:
             print('     Закрытие всех позиций по условию стоп-лосс')
             await send_comment('Закрытие всех позиций по условию стоп-лосс. Убыток торговли c' + str(
-                settings.start_date.replace(microsecond=0)) + ':' + str(round(total_profit, 2)))
+                start_date.replace(microsecond=0)) + ':' + str(round(total_profit, 2)))
             for act_pos in active_positions:
                 if act_pos.magic == terminal.MAGIC:
-                    Terminal.close_position(investor)
-            if investor['open_trades'] == 'Закрыть и отключить':
-                await disable_dcs(investor)
+                    Terminal.close_position(position=act_pos, reason='07')
+            if db.options['open_trades'] == 'Закрыть и отключить':
+                await db.disable_dcs()
 
 
-def synchronize_positions_volume(investor):
+def synchronize_positions_volume():
     try:
-        investors_balance = investor['investment_size']
+        investors_balance = db.options['investment']
         global old_investors_balance
-        login = investor.get("login")
-        if login not in old_investors_balance:
-            old_investors_balance[login] = investors_balance
-        if "Корректировать объем" in (investor["recovery_model"], investor["buy_hold_model"]):
-            if investors_balance != old_investors_balance[login]:
-                volume_change_coefficient = investors_balance / old_investors_balance[login]
+        if "Корректировать объем" in (db.options["recovery_model"], db.options["buy_hold_model"]):
+            if investors_balance != old_investors_balance:
+                volume_change_coefficient = investors_balance / old_investors_balance
                 if volume_change_coefficient != 1.0:
                     investors_positions_table = LinkedPositions.get_linked_positions_table()
                     for _ in investors_positions_table:
@@ -130,7 +124,7 @@ def synchronize_positions_volume(investor):
                         new_volume = round(volume_change_coefficient * volume, decimals)
                         if volume != new_volume:
                             _.modify_volume(new_volume)
-                old_investors_balance[login] = investors_balance
+                old_investors_balance = investors_balance
     except Exception as e:
         print("Exception in synchronize_positions_volume():", e)
 
@@ -138,8 +132,8 @@ def synchronize_positions_volume(investor):
 def synchronize_positions_limits(lieder_positions):
     """Изменение уровней ТП и СЛ указанной позиции"""
     for l_pos in lieder_positions:
-        l_tp = Terminal.get_pos_pips_tp(l_pos)
-        l_sl = Terminal.get_pos_pips_sl(l_pos)
+        l_tp = Terminal.get_pos_pips_tp(l_pos, l_pos['price_open'])
+        l_sl = Terminal.get_pos_pips_sl(l_pos, l_pos['price_open'])
         if l_tp > 0 or l_sl > 0:
             for i_pos in Terminal.get_positions():
                 request = []
@@ -148,9 +142,9 @@ def synchronize_positions_limits(lieder_positions):
                     comment = DealComment().set_from_string(i_pos.comment)
                     comment.reason = '09'
                     new_comment_str = comment.string()
-                if comment.lieder_ticket == l_pos.ticket:
-                    i_tp = Terminal.get_pos_pips_tp(i_pos)
-                    i_sl = Terminal.get_pos_pips_sl(i_pos)
+                if comment.lieder_ticket == l_pos['ticket']:
+                    i_tp = Terminal.get_pos_pips_tp(i_pos, i_pos.price_open)
+                    i_sl = Terminal.get_pos_pips_sl(i_pos, i_pos.price_open)
                     sl_lvl = tp_lvl = 0.0
                     decimals = Terminal.get_symbol_decimals(i_pos.symbol)
                     if i_pos.type == Terminal.position_type_buy():
@@ -171,74 +165,75 @@ def synchronize_positions_limits(lieder_positions):
                         }
                 if request:
                     result = Terminal.send_order(request)
-                    print('Лимит изменен:', result)
+                    print('\tЛимит изменен:', result)
 
 
-def check_transaction(investor, lieder_position):
+def check_transaction(leader_position):
     """Проверка открытия позиции"""
-    price_refund = True if investor['price_refund'] == 'Да' else False
+    price_refund = True if db.options['price_refund'] == 'Да' else False
     if not price_refund:  # если не возврат цены
-        timeout = investor['waiting_time'] * 60
-        deal_time = int(lieder_position.time_update - datetime.utcnow().timestamp())  # get_time_offset(investor))
+        timeout = db.options['waiting_time']  # * 60
+
+        deal_time = int(leader_position['time_update'])  # - datetime.utcnow().timestamp())
         curr_time = int(datetime.timestamp(datetime.utcnow().replace(microsecond=0)))
         delta_time = curr_time - deal_time
         if delta_time > timeout:  # если время больше заданного
-            # print('Время истекло')
+            print('Время истекло')
             return False
 
     transaction_type = 0
-    if investor['ask_an_investor'] == 'Плюс':
+    if db.options['ask_an_investor'] == 'Плюс':
         transaction_type = 1
-    elif investor['ask_an_investor'] == 'Минус':
+    elif db.options['ask_an_investor'] == 'Минус':
         transaction_type = -1
-    deal_profit = lieder_position.profit
+    deal_profit = leader_position['profit']
     if transaction_type > 0 > deal_profit:  # если открывать только + и профит < 0
         return False
     if deal_profit > 0 > transaction_type:  # если открывать только - и профит > 0
         return False
 
-    transaction_plus = investor['deal_in_plus']
-    transaction_minus = investor['deal_in_minus']
-    price_open = lieder_position.price_open
-    price_current = lieder_position.price_current
+    transaction_plus = db.options['deal_in_plus']
+    transaction_minus = db.options['deal_in_minus']
+    price_open = leader_position['price_open']
+    price_current = leader_position['price_current']
 
     res = None
-    if lieder_position.type == 0:  # Buy
+    if leader_position['type'] == 0:  # Buy
         res = (price_current - price_open) / price_open * 100  # Расчет сделки покупки по формуле
-    elif lieder_position.type == 1:  # Sell
+    elif leader_position['type'] == 1:  # Sell
         res = (price_open - price_current) / price_open * 100  # Расчет сделки продажи по формуле
     return True if res is not None and transaction_plus >= res >= transaction_minus else False  # Проверка на заданные отклонения
 
 
-def multiply_deal_volume(investor, lieder_position, lieder_balance, lieder_equity):
+def multiply_deal_volume(leader_position):
     """Расчет множителя"""
-    lieder_balance_value = lieder_balance if investor['multiplier'] == 'Баланс' else lieder_equity
-    symbol = lieder_position.symbol
-    lieder_volume = lieder_position.volume
-    multiplier = investor['multiplier_value']
-    investment_size = investor['investment_size']
-    get_for_balance = True if investor['multiplier'] == 'Баланс' else False
+    lieder_balance_value = db.leader_balance if db.options['multiplier'] == 'Баланс' else db.leader_equity
+    symbol = leader_position['symbol']
+    lieder_volume = leader_position['volume']
+    multiplier = float(db.options['multiplier_value'])
+    investment_size = float(db.options['investment'])
+    get_for_balance = True if db.options['multiplier'] == 'Баланс' else False
     if get_for_balance:
-        ext_k = (investment_size + Terminal.get_history_profit()) / lieder_balance_value
+        ext_k = (investment_size + terminal.get_history_profit()) / lieder_balance_value
     else:
-        ext_k = (
-                        investment_size + Terminal.get_history_profit() + Terminal.get_positions_profit()) / lieder_balance_value
+        ext_k = (investment_size + terminal.get_history_profit() + Terminal.get_positions_profit()) / \
+                lieder_balance_value
     try:
         decimals = Terminal.get_volume_decimals(symbol)
     except AttributeError:
         decimals = 2
-    if investor['changing_multiplier'] == 'Нет':
+    if db.options['changing_multiplier'] == 'Нет':
         result = round(lieder_volume * ext_k, decimals)
     else:
         result = round(lieder_volume * multiplier * ext_k, decimals)
     return result
 
 
-def get_currency_coefficient(investor):
+def get_currency_coefficient():
     global EURUSD, EURRUB, USDRUB
-    lid_currency = source['lieder']['currency']
-    inv_currency = investor['currency']
-    eurusd = usdrub = eurrub = -1
+    lid_currency = db.leader_currency  # source['lieder']['currency']
+    inv_currency = Terminal.get_account_currency()  # investor['currency']
+    # eurusd = usdrub = eurrub = -1
 
     usdrub = Terminal.get_price_bid('USDRUB')
     eurusd = Terminal.get_price_bid('EURUSD')
@@ -275,99 +270,47 @@ def get_currency_coefficient(investor):
     return currency_coefficient
 
 
-# async def open_position(investor, symbol, deal_type, lot, sender_ticket: int, tp=0.0, sl=0.0):
-#     """Открытие позиции"""
-#     try:
-#         point = Terminal.get_symbol_decimals(symbol=symbol)
-#         price = tp_in = sl_in = 0.0
-#         if deal_type == 0:  # BUY
-#             deal_type = Terminal.order_type_buy()
-#             price = Terminal.get_price_ask(symbol)
-#         if tp != 0:
-#             tp_in = price + tp * point
-#         if sl != 0:
-#             sl_in = price - sl * point
-#         elif deal_type == 1:  # SELL
-#             deal_type = Terminal.order_type_sell()
-#             price = Terminal.get_price_bid(symbol)
-#             if tp != 0:
-#                 tp_in = price - tp * point
-#             if sl != 0:
-#                 sl_in = price + sl * point
-#     except AttributeError:
-#         return {'retcode': -200}
-#     comment = DealComment()
-#     comment.lieder_ticket = sender_ticket
-#     comment.reason = '01'
-#     request = {
-#         "action": Terminal.trade_action_deal(),
-#         "symbol": symbol,
-#         "volume": lot,
-#         "type": deal_type,
-#         "price": price,
-#         "sl": sl_in,
-#         "tp": tp_in,
-#         "deviation": Terminal.DEVIATION,
-#         "magic": Terminal.MAGIC,
-#         "comment": comment.string(),
-#         "type_time": Terminal.order_tyme_gtc(),
-#         "type_filling": Terminal.order_filling_fok(),
-#     }
-#     checked_request = await edit_volume_for_margin(investor, request)  # Проверка и расчет объема при недостатке маржи
-#     if not checked_request:
-#         return {'retcode': -100}
-#     elif checked_request == -1:
-#         # await set_comment('Уменьшите множитель или увеличите сумму инвестиции')
-#         return {'retcode': -800}
-#     elif checked_request != 'EMPTY_REQUEST' and checked_request != 'MORE_THAN_MAX_VOLUME':
-#         result = Mt.order_send(checked_request)
-#         return result
+async def execute_investor(sleep=settings.sleep_leader_update):
+    global leader_positions, db  # , leader_balance, leader_equity
+    while True:
+        await db.update_data()
+        leader_positions = await db.get_db_positions(leader_account_id)
+        if db.options['blacklist'] == 'Да':
+            print(init_data['login'], 'in blacklist')
+            return
+        if await check_notification():
+            print(init_data['login'], 'not pay - notify')
+            return
+        if await check_connection_exchange():
+            print(init_data['login'], 'API expired or Broker disconnected')
+            return
 
+        if dcs_access:
+            await execute_conditions()  # проверка условий кейса закрытия
+        if dcs_access:
+            await check_stop_limits()  # проверка условий стоп-лосс
 
-async def execute_investor(investor, lieder_positions, lieder_balance, lieder_equity):
-    if investor['blacklist'] == 'Да':
-        print(investor['login'], 'in blacklist')
-        return
-    if await check_notification(investor):
-        print(investor['login'], 'not pay - notify')
-        return
-    if await check_connection_exchange(investor):
-        print(investor['login'], 'API expired or Broker disconnected')
-        return
-    # synchronize = True if investor['deals_not_opened'] == 'Да' or investor['synchronize_deals'] == 'Да' else False
-    # if investor['synchronize_deals'] == 'Да':  # если "синхронизировать"
-    #     await disable_synchronize(synchronize)
-    # if not synchronize:
-    #     return
+        if dcs_access:
 
-    # init_res = init_mt(init_data=investor)
-    # if not init_res:
-    #     await set_comment('Ошибка инициализации инвестора ' + str(investor['login']))
-    #     return
+            synchronize_positions_volume()  # коррекция объемов позиций
+            synchronize_positions_limits(leader_positions)  # коррекция лимитов позиций
 
-    if investor['dcs_access']:
-        await execute_conditions(investor=investor)  # проверка условий кейса закрытия
-    if investor['dcs_access']:
-        await check_stop_limits(investor=investor)  # проверка условий стоп-лосс
-    if investor['dcs_access']:
+            for pos_lid in leader_positions:
+                if terminal.is_position_opened(options_data=db.options, leader_position=pos_lid):
+                    continue
 
-        synchronize_positions_volume(investor)  # коррекция объемов позиций
-        synchronize_positions_limits(investor)  # коррекция лимитов позиций
+                inv_tp = Terminal.get_pos_pips_tp(pos_lid, pos_lid['price_open'])
+                inv_sl = Terminal.get_pos_pips_sl(pos_lid, pos_lid['price_open'])
 
-        for pos_lid in lieder_positions:
-            inv_tp = Terminal.get_pos_pips_tp(pos_lid)
-            inv_sl = Terminal.get_pos_pips_sl(pos_lid)
-            if not Terminal.is_position_opened(pos_lid, investor):
                 ret_code = None
-                if check_transaction(investor=investor, lieder_position=pos_lid):
-                    volume = multiply_deal_volume(investor, lieder_position=pos_lid, lieder_balance=lieder_balance,
-                                                  lieder_equity=lieder_equity)
+                if check_transaction(leader_position=pos_lid):
 
-                    decimals = Terminal.get_volume_decimals(pos_lid.symbol)
-                    volume = round(volume / get_currency_coefficient(investor), decimals)
-                    response = await Terminal.open_position(investor=investor, symbol=pos_lid.symbol,
-                                                            deal_type=pos_lid.type,
-                                                            lot=volume, sender_ticket=pos_lid.ticket,
+                    volume = multiply_deal_volume(leader_position=pos_lid)
+                    decimals = Terminal.get_volume_decimals(pos_lid['symbol'])
+                    volume = round(volume / get_currency_coefficient(), decimals)
+                    response = await terminal.open_position(options_data=db.options, symbol=pos_lid['symbol'],
+                                                            deal_type=pos_lid['type'],
+                                                            lot=volume, sender_ticket=pos_lid['ticket'],
                                                             tp=inv_tp, sl=inv_sl)
                     if response:
                         try:
@@ -375,28 +318,61 @@ async def execute_investor(investor, lieder_positions, lieder_balance, lieder_eq
                         except AttributeError:
                             ret_code = response['retcode']
                 if ret_code:
-                    msg = str(investor['login']) + ' ' + Terminal.send_retcodes[ret_code][1]  # + ' : ' + str(ret_code)
+                    msg = str(init_data['login']) + ' ' + Terminal.send_retcodes[ret_code][1]  # + ' : ' + str(ret_code)
                     if ret_code != 10009:  # Заявка выполнена
                         await send_comment('\t' + msg)
                     print(msg)
-        # else:
-        #     set_comment('Не выполнено условие +/-')
+            # else:
+            #     set_comment('Не выполнено условие +/-')
 
-    # закрытие позиций от лидера
-    if (investor['dcs_access'] or  # если сопровождать сделки или доступ есть
-            (not investor['dcs_access'] and investor['accompany_transactions'] == 'Да')):
-        Terminal.close_positions_by_lieder(investor)
+        # закрытие позиций от лидера
+        if (dcs_access or  # если сопровождать сделки или доступ есть
+                (not dcs_access and db.options['accompany_transactions'] == 'Да')):
+            closed_positions = Terminal.close_positions_by_lieder(leader_positions=leader_positions)
+            for _ in closed_positions:
+                await db.send_history_position(_.ticket)
 
-    # Mt.shutdown()
+        active_db_positions = await db.get_db_positions(account_id)
+        active_db_tickets = [position['ticket'] for position in active_db_positions]
+        terminal_positions = Terminal.get_positions()
+        terminal_tickets = [position.ticket for position in terminal_positions]
+
+        for position in terminal_positions:
+            if position.ticket not in active_db_tickets:
+                await db.send_position(position)
+            else:
+                await db.update_position(position)
+
+        for position in active_db_positions:
+            if position['ticket'] not in terminal_tickets:
+                await db.disable_position(position['ticket'])
+
+        await asyncio.sleep(sleep)
 
 
 if __name__ == '__main__':
-    terminal = Terminal(login=66587203, password='3hksvtko', server='MetaQuotes-Demo',
-                        path=r'C:\Program Files\MetaTrader 5\terminal64.exe')
-    if not terminal.init_mt():
-        await send_comment('Ошибка инициализации лидера')
+    init_data = db.get_init_data(host=host, account_idx=account_id, terminal_path=terminal_path)
+    if not Terminal.is_init_data_valid(init_data):
         exit()
-
+    terminal = Terminal(login=int(init_data['login']),
+                        password=init_data['password'],
+                        server=init_data['server'],
+                        path=init_data['path'],
+                        start_date=datetime.now())
+    if not terminal.init_mt():
+        print('Ошибка инициализации лидера', init_data)
+        exit()
+    db.initialize(init_data=init_data, leader_id=leader_account_id, account_id=account_id, host=host,
+                  leader_currency=Terminal.get_account_currency())
     event_loop = asyncio.new_event_loop()
     event_loop.create_task(execute_investor())
     event_loop.run_forever()
+    # terminal = Terminal(login=66587203, password='3hksvtko', server='MetaQuotes-Demo',
+    #                     path=r'C:\Program Files\MetaTrader 5\terminal64.exe')
+    # if not terminal.init_mt():
+    #     await send_comment('Ошибка инициализации лидера')
+    #     exit()
+    #
+    # event_loop = asyncio.new_event_loop()
+    # event_loop.create_task(execute_investor())
+    # event_loop.run_forever()

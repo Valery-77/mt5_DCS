@@ -86,39 +86,59 @@ class Terminal:
     path: str
     account_balance: float
     account_equity: float
+    start_date: datetime
 
-    START_DATE = settings.start_date
     SERVER_DELTA_TIME = timedelta(hours=settings.SERVER_TIME_OFFSET_HOURS)
     TIMEOUT = settings.TIMEOUT_INIT
     DEVIATION = settings.DEVIATION
     MAGIC = settings.MAGIC
 
-    __slots__ = ['login', 'password', 'server', 'path', 'account_balance', 'account_equity']
+    __slots__ = ['login', 'password', 'server', 'path', 'account_balance', 'account_equity', 'start_date']
 
-    def __init__(self, login, password, server, path):
+    def __init__(self, login, password, server, path, start_date):
         self.login = login
         self.password = password
         self.server = server
         self.path = path
+        self.start_date = start_date
 
     def init_mt(self):
         """Initialize connection"""
         return Mt.initialize(login=self.login, server=self.server, password=self.password, path=self.path,
                              timeout=self.TIMEOUT)
 
-    @property
+    # @property
     def get_balance(self):
         self.account_balance = Mt.account_info().balance
         return self.account_balance
 
-    @property
+    # @property
     def get_equity(self):
         self.account_equity = Mt.account_info().equity
         return self.account_equity
 
     @staticmethod
+    def is_init_data_valid(data):
+        try:
+            valid = int(data['login']) and data['password'] and data['server'] and data['path']
+            if not valid:
+                print('Неверные данные инициализации', data)
+            return valid
+        except Exception as e:
+            print('Неверные данные инициализации', e)
+            return False
+
+    @staticmethod
     def get_account_currency():
         return Mt.account_info().currency
+
+    @staticmethod
+    def get_contract_size(symbol):
+        return Mt.symbol_info(symbol).trade_contract_size
+
+    @staticmethod
+    def get_history_deals_for_ticket(ticket):
+        return Mt.history_deals_get(position=ticket)
 
     @staticmethod
     def send_order(request):
@@ -176,7 +196,14 @@ class Terminal:
 
     @staticmethod
     def get_symbol_decimals(symbol):
-        return Mt.symbol_info(symbol).point
+        points = Mt.symbol_info(symbol).point
+        str_point = str(points)
+        if 'e' in str_point:
+            tmp = int(str_point.split('-')[-1])
+        else:
+            tmp = str_point[::-1].find('.')
+        # print('=======', tmp)
+        return tmp
 
     @staticmethod
     def get_pos_pips_tp(position, price=None):
@@ -184,8 +211,12 @@ class Terminal:
         if price is None:
             price = position.price_open
         result = 0.0
-        if position.tp > 0:
-            result = round(fabs(price - position.tp) / Mt.symbol_info(position.symbol).point)
+        try:
+            if position.tp > 0:
+                result = round(fabs(price - position.tp) / Mt.symbol_info(position.symbol).point)
+        except AttributeError:
+            if position['tp'] > 0:
+                result = round(fabs(price - position['tp']) / Mt.symbol_info(position['symbol']).point)
         return result
 
     @staticmethod
@@ -194,8 +225,12 @@ class Terminal:
         if price is None:
             price = position.price_open
         result = 0.0
-        if position.sl > 0:
-            result = round(fabs(price - position.sl) / Mt.symbol_info(position.symbol).point)
+        try:
+            if position.sl > 0:
+                result = round(fabs(price - position.sl) / Mt.symbol_info(position.symbol).point)
+        except AttributeError:
+            if position['sl'] > 0:
+                result = round(fabs(price - position['sl']) / Mt.symbol_info(position['symbol']).point)
         return result
 
     @staticmethod
@@ -216,27 +251,26 @@ class Terminal:
         return result
 
     @staticmethod
-    def get_investors_positions_count(investor, only_own=True):
+    def get_investors_positions_count(only_own=True):
         """Opened positions count"""
-        return len(Terminal.get_positions(investor)) \
-            if only_own else len(Terminal.get_positions(False))
+        return len(Terminal.get_positions()) if only_own else len(Terminal.get_positions(False))
 
     @staticmethod
-    def is_lieder_position_in_investor(lieder_position):
+    def is_lieder_position_in_investor(leader_position):
         """Return True if lieder position already exist in investor positions list"""
         invest_positions = Terminal.get_positions(only_own=False)
         if len(invest_positions) > 0:
             for pos in invest_positions:
                 if DealComment.is_valid_string(pos.comment):
                     comment = DealComment().set_from_string(pos.comment)
-                    if lieder_position.ticket == comment.lieder_ticket:
+                    if leader_position['ticket'] == comment.lieder_ticket:
                         return True
         return False
 
-    @staticmethod
-    def is_lieder_position_in_investor_history(lieder_position):
+    # @staticmethod
+    def is_lieder_position_in_investor_history(self, leader_position):
         """Return True if lieder position was opened by investor"""
-        date_from = Terminal.START_DATE + Terminal.SERVER_DELTA_TIME
+        date_from = self.start_date + Terminal.SERVER_DELTA_TIME
         date_to = datetime.today().replace(microsecond=0) + timedelta(days=1)
         deals = Mt.history_deals_get(date_from, date_to)
         if not deals:
@@ -247,7 +281,7 @@ class Terminal:
             for pos in deals:
                 if DealComment.is_valid_string(pos.comment):
                     comment = DealComment().set_from_string(pos.comment)
-                    if lieder_position.ticket == comment.lieder_ticket:
+                    if leader_position.ticket == comment.lieder_ticket:
                         result = pos
                         if comment.reason == '07':
                             result_sl = pos
@@ -255,19 +289,34 @@ class Terminal:
                     break
         return result, result_sl
 
-    @staticmethod
-    def is_position_opened(lieder_position, investor):
+    # @staticmethod
+    def is_position_opened(self, leader_position, options_data):
         """Check position for exist in history and current positions of investor"""
-        if Terminal.is_lieder_position_in_investor(lieder_position=lieder_position):
+        if Terminal.is_lieder_position_in_investor(leader_position=leader_position):
             return True
 
-        exist_position, closed_by_sl = Terminal.is_lieder_position_in_investor_history(lieder_position=lieder_position)
+        exist_position, closed_by_sl = self.is_lieder_position_in_investor_history(leader_position=leader_position)
         if exist_position:
             if not closed_by_sl:
-                if investor['closed_deals_myself'] == 'Переоткрывать':
+                if options_data['closed_deals_myself'] == 'Переоткрывать':
                     return False
             return True
         return False
+
+    @staticmethod
+    def is_symbol_allow(symbol):
+        all_symbols = Mt.symbols_get()
+        symbol_names = []
+        for symbol_ in all_symbols:
+            symbol_names.append(symbol_.name)
+
+        if symbol in symbol_names:
+            if Mt.symbol_select(symbol, True):
+                return True
+            else:
+                return False
+        else:
+            return False
 
     @staticmethod
     def get_positions_profit():
@@ -280,10 +329,10 @@ class Terminal:
                     result += pos.profit  # + pos.commission
         return result
 
-    @staticmethod
-    def get_history_profit():
+    # @staticmethod
+    def get_history_profit(self):
         """Return profit of history deals"""
-        date_from = Terminal.START_DATE + Terminal.SERVER_DELTA_TIME
+        date_from = self.start_date + Terminal.SERVER_DELTA_TIME
         date_to = datetime.now().replace(microsecond=0) + timedelta(days=1)
         deals = Mt.history_deals_get(date_from, date_to)
 
@@ -332,8 +381,8 @@ class Terminal:
             f'Размер инвестиции: {investment}  Курс: {price}  Контракт: {contract}  Плечо: {leverage}  >>  ОБЪЕМ: {volume}')
         return volume
 
-    @staticmethod
-    async def edit_volume_for_margin(investor, request):
+    # @staticmethod
+    async def edit_volume_for_margin(self, options, request):
         """Calc for margin deficit and check for max deal volume"""
         response = Mt.order_check(request)
         if not response or len(response) <= 0:
@@ -345,21 +394,21 @@ class Terminal:
                 print(investor['login'], f'Объем сделки [{request["volume"]}] больше максимального [{max_vol}]. ')
                 await send_comment('Объем сделки больше максимального')
                 return 'MORE_THAN_MAX_VOLUME'
-            if investor['not_enough_margin'] == 'Минимальный объем':
+            if options['not_enough_margin'] == 'Минимальный объем':
                 request['volume'] = Mt.symbol_info(request['symbol']).volume_min
-            elif investor['not_enough_margin'] == 'Достаточный объем':
-                hst_profit = Terminal.get_history_profit()
+            elif options['not_enough_margin'] == 'Достаточный объем':
+                hst_profit = self.get_history_profit()
                 cur_profit = Terminal.get_positions_profit()
-                balance = investor['investment_size'] + hst_profit + cur_profit
+                balance = options['investment_size'] + hst_profit + cur_profit
                 volume = Terminal.get_lots_for_investment(symbol=request['symbol'], investment=balance)
                 request['volume'] = volume
-            elif investor['not_enough_margin'] == 'Не открывать' \
-                    or investor['not_enough_margin'] == 'Не выбрано':
+            elif options['not_enough_margin'] == 'Не открывать' \
+                    or options['not_enough_margin'] == 'Не выбрано':
                 request = None
         return request
 
-    @staticmethod
-    async def open_position(investor, symbol, deal_type, lot, sender_ticket: int, tp=0.0, sl=0.0):
+    # @staticmethod
+    async def open_position(self, options_data, symbol, deal_type, lot, sender_ticket: int, tp=0.0, sl=0.0):
         """Open position in terminal"""
         try:
             point = Mt.symbol_info(symbol).point
@@ -397,8 +446,8 @@ class Terminal:
             "type_time": Mt.ORDER_TIME_GTC,
             "type_filling": Mt.ORDER_FILLING_FOK,
         }
-        checked_request = await Terminal.edit_volume_for_margin(investor,
-                                                                request)  # Проверка и расчет объема при недостатке маржи
+        checked_request = await self.edit_volume_for_margin(options=options_data,
+                                                            request=request)  # Проверка и расчет объема при недостатке маржи
         if not checked_request:
             return {'retcode': -100}
         elif checked_request == -1:
@@ -432,7 +481,7 @@ class Terminal:
             'type_filing': Mt.ORDER_FILLING_IOC
         }
         result = Mt.order_send(request)
-        print('\t\t - close position:', new_comment_str.lieder_ticket)
+        print('\t\t - close position:', new_comment_str)
         return result
 
     @staticmethod
@@ -445,19 +494,20 @@ class Terminal:
                     Terminal.close_position(position=position, reason=reason)
 
     @staticmethod
-    def close_positions_by_lieder(lieder_positions):
+    def close_positions_by_lieder(leader_positions):
         """Close investor positions that was closed in lieder"""
         positions_investor = Terminal.get_positions()
         non_existed_positions = []
         if positions_investor:
             for ip in positions_investor:
                 position_exist = False
-                for lp in lieder_positions:
+                for lp in leader_positions:
                     comment = DealComment().set_from_string(ip.comment)
-                    if comment.lieder_ticket == lp.ticket:
+                    if comment.lieder_ticket == lp['ticket']:
                         position_exist = True
                         break
                 if not position_exist:
                     non_existed_positions.append(ip)
         for pos in non_existed_positions:
             Terminal.close_position(position=pos, reason='06')
+        return non_existed_positions

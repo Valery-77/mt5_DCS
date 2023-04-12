@@ -1,6 +1,5 @@
 """Functions collection for HTTP requests"""
 import aiohttp
-
 import settings
 
 
@@ -17,28 +16,28 @@ async def get(url):
 
 async def patch(url, data):
     response = []
-    status = None
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers={"Content-type": "application/json"}) as session:
             async with session.patch(url=url, data=data) as get_response:
                 response = await get_response.json()
-                status = get_response.status
+                if get_response.status != 200:
+                    print('PATCH', get_response.status, get_response.reason)
     except Exception as e:
         print('Exception in patch():', e)
-    return response, status
+    return response
 
 
 async def post(url, data):
     response = []
-    status = None
     try:
-        async with aiohttp.ClientSession() as session:
+        async with aiohttp.ClientSession(headers={"Content-type": "application/json"}) as session:
             async with session.post(url=url, data=data) as get_response:
                 response = await get_response.json()
-                status = get_response.status
+                if get_response.status != 200:
+                    print('POST', get_response.status, get_response.reason)
     except Exception as e:
         print('Exception in post():', e)
-    return response, status
+    return response
 
 
 async def get_current_db_record_id():
