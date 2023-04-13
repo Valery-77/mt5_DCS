@@ -13,10 +13,7 @@ from terminal import Terminal
 terminal: Terminal
 old_investors_balance = 0
 leader_positions = []
-# leader_balance = 0
-# leader_equity = 0
-# leader_currency = 'USD'
-# self_currency = ''
+max_balance = 0
 dcs_access = True
 # init_data = {}
 # options = {}
@@ -62,7 +59,9 @@ async def execute_conditions():
             await db.disable_dcs()
 
         if db.options['open_trades_disconnect'] == 'Закрыть':  # если сделки закрыть
-            Terminal.force_close_all_positions('03')
+            closed_positions = Terminal.force_close_all_positions('03')
+            for _ in closed_positions:
+                await db.send_history_position(_.ticket, max_balance)
             await db.disable_dcs()
 
         elif db.options['accompany_transactions'] == 'Нет':  # если сделки оставить и не сопровождать
@@ -84,7 +83,7 @@ async def check_stop_limits():
     close_positions = False
     total_profit = history_profit + current_profit
     print(f' - {init_data["login"]} [{db.leader_currency}] - {len(Terminal.get_positions())} positions. Access:',
-          dcs_access,  ' ', datetime.now(), end='')
+          dcs_access, ' ', datetime.now(), end='')
     print('\t', 'Прибыль' if total_profit >= 0 else 'Убыток', 'торговли c', start_date,
           ':', round(total_profit, 2), db.leader_currency,
           '{curr.', round(current_profit, 2), ': hst. ' + str(round(history_profit, 2)) + '}')
@@ -105,6 +104,7 @@ async def check_stop_limits():
             for act_pos in active_positions:
                 if act_pos.magic == terminal.MAGIC:
                     Terminal.close_position(position=act_pos, reason='07')
+                    await db.send_history_position(act_pos.ticket, max_balance)
             if db.options['open_trades'] == 'Закрыть и отключить':
                 await db.disable_dcs()
 
@@ -132,6 +132,8 @@ def synchronize_positions_volume():
 def synchronize_positions_limits(lieder_positions):
     """Изменение уровней ТП и СЛ указанной позиции"""
     for l_pos in lieder_positions:
+        if not Terminal.is_symbol_allow(l_pos['symbol']):
+            continue
         l_tp = Terminal.get_pos_pips_tp(l_pos, l_pos['price_open'])
         l_sl = Terminal.get_pos_pips_sl(l_pos, l_pos['price_open'])
         if l_tp > 0 or l_sl > 0:
@@ -143,16 +145,17 @@ def synchronize_positions_limits(lieder_positions):
                     comment.reason = '09'
                     new_comment_str = comment.string()
                 if comment.lieder_ticket == l_pos['ticket']:
-                    i_tp = Terminal.get_pos_pips_tp(i_pos, i_pos.price_open)
-                    i_sl = Terminal.get_pos_pips_sl(i_pos, i_pos.price_open)
+                    i_tp = Terminal.get_pos_pips_tp(i_pos)
+                    i_sl = Terminal.get_pos_pips_sl(i_pos)
                     sl_lvl = tp_lvl = 0.0
-                    decimals = Terminal.get_symbol_decimals(i_pos.symbol)
+                    decimals = 10 ** -Terminal.get_symbol_decimals(i_pos.symbol)
                     if i_pos.type == Terminal.position_type_buy():
-                        sl_lvl = i_pos.price_open - l_sl * decimals
-                        tp_lvl = i_pos.price_open + l_tp * decimals
+                        sl_lvl = i_pos.price_open - l_sl * decimals if l_sl else 0.0
+                        tp_lvl = i_pos.price_open + l_tp * decimals if l_tp else 0.0
                     elif i_pos.type == Terminal.position_type_sell():
-                        sl_lvl = i_pos.price_open + l_sl * decimals
-                        tp_lvl = i_pos.price_open - l_tp * decimals
+                        sl_lvl = i_pos.price_open + l_sl * decimals if l_sl else 0.0
+                        tp_lvl = i_pos.price_open - l_tp * decimals if l_tp else 0.0
+
                     if i_tp != l_tp or i_sl != l_sl:
                         request = {
                             "action": Terminal.trade_action_sltp(),
@@ -163,6 +166,7 @@ def synchronize_positions_limits(lieder_positions):
                             "magic": Terminal.MAGIC,
                             "comment": new_comment_str
                         }
+
                 if request:
                     result = Terminal.send_order(request)
                     print('\tЛимит изменен:', result)
@@ -271,10 +275,14 @@ def get_currency_coefficient():
 
 
 async def execute_investor(sleep=settings.sleep_leader_update):
-    global leader_positions, db  # , leader_balance, leader_equity
+    global leader_positions, db, max_balance
     while True:
         await db.update_data()
         leader_positions = await db.get_db_positions(leader_account_id)
+        balance = Terminal.get_account_balance()
+        if balance > max_balance:
+            max_balance = balance
+
         if db.options['blacklist'] == 'Да':
             print(init_data['login'], 'in blacklist')
             return
@@ -296,6 +304,11 @@ async def execute_investor(sleep=settings.sleep_leader_update):
             synchronize_positions_limits(leader_positions)  # коррекция лимитов позиций
 
             for pos_lid in leader_positions:
+                if not Terminal.is_symbol_allow(pos_lid['symbol']):
+                    continue
+                tick = Terminal.copy_rates_range(pos_lid['symbol'], pos_lid['time'],
+                                                 Terminal.symbol_info_tick(pos_lid['symbol']).time)
+                # print(tick)
                 if terminal.is_position_opened(options_data=db.options, leader_position=pos_lid):
                     continue
 
@@ -330,7 +343,7 @@ async def execute_investor(sleep=settings.sleep_leader_update):
                 (not dcs_access and db.options['accompany_transactions'] == 'Да')):
             closed_positions = Terminal.close_positions_by_lieder(leader_positions=leader_positions)
             for _ in closed_positions:
-                await db.send_history_position(_.ticket)
+                await db.send_history_position(_.ticket, max_balance)
 
         active_db_positions = await db.get_db_positions(account_id)
         active_db_tickets = [position['ticket'] for position in active_db_positions]
@@ -339,7 +352,7 @@ async def execute_investor(sleep=settings.sleep_leader_update):
 
         for position in terminal_positions:
             if position.ticket not in active_db_tickets:
-                await db.send_position(position)
+                await db.send_position(position, db.investment_size)
             else:
                 await db.update_position(position)
 
@@ -364,6 +377,9 @@ if __name__ == '__main__':
         exit()
     db.initialize(init_data=init_data, leader_id=leader_account_id, account_id=account_id, host=host,
                   leader_currency=Terminal.get_account_currency())
+
+    db.send_currency()
+
     event_loop = asyncio.new_event_loop()
     event_loop.create_task(execute_investor())
     event_loop.run_forever()

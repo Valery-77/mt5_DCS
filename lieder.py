@@ -46,6 +46,7 @@ async def send_position(position):
         "profit": position.profit,
         "price_close": 0,
         "time_close": 0,
+        "investment_size": init_data['investment_size'],
         "active": True
     }
     print(f'\t-- add position {data["ticket"]}')
@@ -117,8 +118,8 @@ async def update_leader_info(sleep=settings.sleep_leader_update):
                 await update_position(position)
 
         print(
-            f'\nLEADER {terminal.login} [{Terminal.get_account_currency()}] - {len(terminal_positions)} positions :',
-            datetime.now().replace())
+            f'{terminal.login} [{Terminal.get_account_currency()}] - {len(terminal_positions)} positions :',
+            datetime.now().replace(), "- LEADER")
         await asyncio.sleep(sleep)
 
 

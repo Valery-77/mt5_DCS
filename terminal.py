@@ -1,5 +1,4 @@
 """Class for connection and execute deals with terminal MetaTrader5"""
-
 from datetime import datetime, timedelta
 from math import fabs, floor
 
@@ -107,9 +106,12 @@ class Terminal:
         return Mt.initialize(login=self.login, server=self.server, password=self.password, path=self.path,
                              timeout=self.TIMEOUT)
 
-    # @property
+    @staticmethod
+    def get_account_balance():
+        return Mt.account_info().balance
+
     def get_balance(self):
-        self.account_balance = Mt.account_info().balance
+        self.account_balance = self.get_account_balance()
         return self.account_balance
 
     # @property
@@ -133,12 +135,29 @@ class Terminal:
         return Mt.account_info().currency
 
     @staticmethod
+    def symbol_info_tick(symbol):
+        return Mt.symbol_info_tick(symbol)
+
+    @staticmethod
     def get_contract_size(symbol):
         return Mt.symbol_info(symbol).trade_contract_size
 
     @staticmethod
     def get_history_deals_for_ticket(ticket):
         return Mt.history_deals_get(position=ticket)
+
+    @staticmethod
+    def get_history_orders_for_ticket(ticket):
+        return Mt.history_orders_get(ticket=ticket)
+
+    @staticmethod
+    def copy_rates_range(symbol, time_from, time_to):
+        return Mt.copy_rates_range(symbol, Mt.TIMEFRAME_M1, time_from, time_to)
+
+    @staticmethod
+    def copy_ticks_range(symbol, time_from, time_to):
+        ticks = Mt.copy_ticks_range(symbol, time_from, time_to, Mt.COPY_TICKS_INFO)
+        return ticks
 
     @staticmethod
     def send_order(request):
@@ -281,7 +300,7 @@ class Terminal:
             for pos in deals:
                 if DealComment.is_valid_string(pos.comment):
                     comment = DealComment().set_from_string(pos.comment)
-                    if leader_position.ticket == comment.lieder_ticket:
+                    if leader_position['ticket'] == comment.lieder_ticket:
                         result = pos
                         if comment.reason == '07':
                             result_sl = pos
@@ -391,7 +410,7 @@ class Terminal:
             info = Mt.symbol_info(request['symbol'])
             max_vol = info.volume_max
             if request['volume'] > max_vol:
-                print(investor['login'], f'Объем сделки [{request["volume"]}] больше максимального [{max_vol}]. ')
+                print(options['login'], f'Объем сделки [{request["volume"]}] больше максимального [{max_vol}]. ')
                 await send_comment('Объем сделки больше максимального')
                 return 'MORE_THAN_MAX_VOLUME'
             if options['not_enough_margin'] == 'Минимальный объем':
@@ -486,12 +505,13 @@ class Terminal:
 
     @staticmethod
     def force_close_all_positions(reason):
-        """Forced close position"""
+        """Forced close positions"""
         positions = Terminal.get_positions(only_own=False)
         if len(positions) > 0:
             for position in positions:
                 if position.magic == Terminal.MAGIC and DealComment.is_valid_string(position.comment):
                     Terminal.close_position(position=position, reason=reason)
+        return positions
 
     @staticmethod
     def close_positions_by_lieder(leader_positions):
