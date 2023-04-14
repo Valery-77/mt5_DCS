@@ -125,6 +125,8 @@ async def update_leader_info(sleep=settings.sleep_leader_update):
 
 if __name__ == '__main__':
     get_settings(account_id)
+    print(init_data)
+
     if not Terminal.is_init_data_valid(init_data):
         exit()
     terminal = Terminal(login=int(init_data['login']),

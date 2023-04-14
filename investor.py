@@ -365,6 +365,8 @@ async def execute_investor(sleep=settings.sleep_leader_update):
 
 if __name__ == '__main__':
     init_data = db.get_init_data(host=host, account_idx=account_id, terminal_path=terminal_path)
+    print(init_data)
+
     if not Terminal.is_init_data_valid(init_data):
         exit()
     terminal = Terminal(login=int(init_data['login']),
@@ -375,6 +377,7 @@ if __name__ == '__main__':
     if not terminal.init_mt():
         print('Ошибка инициализации лидера', init_data)
         exit()
+    leader_account_id = db.get_leader_id(host, account_id)
     db.initialize(init_data=init_data, leader_id=leader_account_id, account_id=account_id, host=host,
                   leader_currency=Terminal.get_account_currency())
 

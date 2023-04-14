@@ -44,8 +44,7 @@ class DBInterface:
         url = self.host + f'position/get/{self.account_id}/{position_ticket}'
         response = await get(url)
         investment = response[0]['investment_size']
-        # 'Slippage %'
-        plus_minus_value = self.options['deal_in_plus'] if self.options['deal_in_plus'] \
+        slippage_percent = self.options['deal_in_plus'] if self.options['deal_in_plus'] \
             else self.options['deal_in_minus']
         drawdown = (max_balance - (Terminal.get_account_balance() - investment)) / max_balance
         history_orders = Terminal.get_history_orders_for_ticket(int(position_ticket))
@@ -68,14 +67,14 @@ class DBInterface:
         position = history_orders[0]
         if not position:
             return
-        volume = position.volume_initial
+        volume = history_orders[-1].volume_initial
 
         rates = Terminal.copy_rates_range(position.symbol, date_open - 1, date_close)
-        price_max = 0
-        price_min = 0
         if len(rates):
             price_max = max([_[2] for _ in rates])
             price_min = min([_[3] for _ in rates])
+        else:
+            price_min = price_max = 0
         history_deals = Terminal.get_history_deals_for_ticket(int(position_ticket))
         if history_deals:
             fee = history_deals[-1].fee
@@ -105,10 +104,6 @@ class DBInterface:
             minimum = (price_max / price_open) * lever * 100 * -1
             maximum = (price_min / price_open) * lever * 100 * -1
 
-        ####
-        # print('\n', history_deals, '\n', history_orders)
-        ####
-
         data = {
             'ticket': position.ticket,  # Ticket
             'exchange': 'MT5',  # Exchange
@@ -125,7 +120,7 @@ class DBInterface:
             'position': '',  #
             'side': 'buy' if position.type == 0 else 'sell' if position.type == 1 else 'not buy or sell',  # Side
             'currency': '',  #
-            'slippage_percent': plus_minus_value,  # Slippage %
+            'slippage_percent': slippage_percent,  # Slippage %
             'slippage_time': self.options['waiting_time'],  # Slippage time
             'size': size,  # Size
             'lots': volume,  # Lots
@@ -169,6 +164,16 @@ class DBInterface:
         init_data = requests.get(url=url).json()[-1]
         init_data['path'] = terminal_path
         return init_data
+
+    @staticmethod
+    def get_leader_id(host, account_idx):
+        url = host + f'leader_id_by_investor/get/{account_idx}'
+        result = requests.get(url=url)
+        # print(result.text)
+        if result:
+            return int(result.text)
+        else:
+            return -1
 
     async def get_investor_options(self):
         url = self.host + f'option/list/'
