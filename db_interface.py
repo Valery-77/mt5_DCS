@@ -161,7 +161,8 @@ class DBInterface:
     @staticmethod
     def get_init_data(host, account_idx, terminal_path):
         url = host + f'account/get/{account_idx}'
-        init_data = requests.get(url=url).json()[-1]
+        response = requests.get(url=url)
+        init_data = response.json()[-1]
         init_data['path'] = terminal_path
         return init_data
 
@@ -251,3 +252,10 @@ class DBInterface:
         # print(self.account_id, url, data)
         print(f'\t-- disable position {position_ticket}')
         await patch(url=url, data=json.dumps(data))
+
+    @staticmethod
+    def get_account_id():
+        path = 'account.txt'
+        with open(path, 'r') as file:
+            contents = file.read()
+            return contents

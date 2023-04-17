@@ -15,16 +15,14 @@ old_investors_balance = 0
 leader_positions = []
 max_balance = 0
 dcs_access = True
-# init_data = {}
-# options = {}
 EURUSD = EURRUB = USDRUB = 0
 db = DBInterface()
 start_date = datetime.now().replace(microsecond=0)
 
-leader_account_id = 1
-account_id = 2
+leader_account_id = -1
+account_id = -1
 
-host = 'http://127.0.0.1:8000/'
+host = settings.host
 terminal_path = r'C:\Program Files\MetaTrader 5_2\terminal64.exe'
 
 
@@ -364,6 +362,7 @@ async def execute_investor(sleep=settings.sleep_leader_update):
 
 
 if __name__ == '__main__':
+    account_id = db.get_account_id()
     init_data = db.get_init_data(host=host, account_idx=account_id, terminal_path=terminal_path)
     print(init_data)
 

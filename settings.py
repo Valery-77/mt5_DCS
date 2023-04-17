@@ -9,7 +9,8 @@ old_investors_balance = {}
 EURUSD = USDRUB = EURRUB = -1
 sleep_leader_update = 1  # пауза для обновления лидера
 
-host = 'https://my.atimex.io:8000/api/demo_mt5/'
+# host = 'https://my.atimex.io:8000/api/demo_mt5/'
+host = 'http://127.0.0.1:8000/'
 
 source = {
     # 'lieder': {},
