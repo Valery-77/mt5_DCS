@@ -40,12 +40,15 @@ class DBInterface:
         data = {"currency": Terminal.get_account_currency()}
         requests.patch(url=url, data=json.dumps(data))
 
-    async def send_history_position(self, position_ticket, max_balance):
+    async def send_history_position(self, position_ticket, max_balance, this_is_leader=False):
         url = self.host + f'position/get/{self.account_id}/{position_ticket}'
         response = await get(url)
         investment = response[0]['investment_size']
-        slippage_percent = self.options['deal_in_plus'] if self.options['deal_in_plus'] \
-            else self.options['deal_in_minus']
+        if not this_is_leader:
+            slippage_percent = self.options['deal_in_plus'] if self.options['deal_in_plus'] \
+                else self.options['deal_in_minus']
+        else:
+            slippage_percent = 0
         drawdown = (max_balance - (Terminal.get_account_balance() - investment)) / max_balance
         history_orders = Terminal.get_history_orders_for_ticket(int(position_ticket))
         deals_time = [deal.time_done for deal in history_orders]
@@ -113,15 +116,15 @@ class DBInterface:
             'account': self.account_id,  # Account
             'strategy': '',  #
             'investment': 0,  #
-            'multiplicator': self.options['multiplier_value'],  # Multiplicator
-            'stop_out': self.options['stop_value'],  # Stop out
+            'multiplicator': self.options['multiplier_value'] if not this_is_leader else 0,  # Multiplicator
+            'stop_out': self.options['stop_value'] if not this_is_leader else 0,  # Stop out
             'symbol': position.symbol,  # Symbol
             'type': '',  #
             'position': '',  #
             'side': 'buy' if position.type == 0 else 'sell' if position.type == 1 else 'not buy or sell',  # Side
             'currency': '',  #
             'slippage_percent': slippage_percent,  # Slippage %
-            'slippage_time': self.options['waiting_time'],  # Slippage time
+            'slippage_time': self.options['waiting_time'] if not this_is_leader else 0,  # Slippage time
             'size': size,  # Size
             'lots': volume,  # Lots
             'lever': lever,  # Lever
@@ -203,7 +206,7 @@ class DBInterface:
         else:
             print('\tEMPTY LEADER DATA')
 
-    async def send_position(self, position, investment_size):
+    async def send_position(self, position, investment_size=0):
         url = self.host + 'position/post'
         data = {
             "account_pk": self.account_id,
@@ -239,7 +242,6 @@ class DBInterface:
             "price_current": position.price_current,
             "comment": position.comment,
         }
-        # print(url, data)
         await patch(url=url, data=json.dumps(data))
 
     async def disable_position(self, position_ticket):
